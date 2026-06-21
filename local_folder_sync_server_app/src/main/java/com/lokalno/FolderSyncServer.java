@@ -133,7 +133,14 @@ public class FolderSyncServer {
 
                                 position++;
 
+                                //at least 1
+                                while (activeClientQueues.isEmpty()) {
+                                    try{
+                                        Thread.sleep(100);
+                                    } catch(InterruptedException e){
 
+                                    }
+                                }
 
                                 for (BlockingQueue<FileMessage> messageQueue : activeClientQueues) {
                                     broadcastPool.submit(() -> {
