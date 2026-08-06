@@ -8,7 +8,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.content.UriPermission;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
@@ -16,12 +15,14 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -34,19 +35,28 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.lokalno.foldersync.FolderSyncGrpc;
 import com.lokalno.foldersync.FolderSyncProto;
 import com.lokalno.localfoldersyncclient.databinding.ActivityMainBinding;
+import com.lokalno.localfoldersyncclient.grpc.GrpcSyncController;
+import com.lokalno.localfoldersyncclient.grpc.SyncCallback;
+import com.lokalno.localfoldersyncclient.model.UserPreferences;
+import com.lokalno.localfoldersyncclient.ui.AvailableDevicesAdapter;
 import com.lokalno.localfoldersyncclient.util.Util;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
+import java.net.InetAddress;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceEvent;
+import javax.jmdns.ServiceListener;
 import javax.net.ssl.SSLSocketFactory;
 
 import io.grpc.Status;
@@ -54,16 +64,19 @@ import io.grpc.StatusRuntimeException;
 
 public class MainActivity extends AppCompatActivity {
     private ActivityMainBinding binding;
+    private final UserPreferences userPreferences = new UserPreferences();
     private ActivityResultLauncher<Intent> folderPickerLauncher;
     private ActivityResultLauncher<String> notificationPermissionLauncher;
-
-    private String pairingCode;
-    private Uri targetFolderUri;
-    private boolean isWorkingInBackgroundAllowed;
 
     private GrpcSyncController activitySyncController;
     private SSLSocketFactory sslSocketFactory;
     private FileSyncManager fileSyncManager;
+    private static JmDNS jmdns;
+    private WifiManager.MulticastLock lock;
+    private AvailableDevicesAdapter availableDevicesAdapter;
+    private final List<String> availableDevices = new ArrayList<>();
+    private final AtomicReference<AppState> appState = new AtomicReference<>(AppState.NOT_READY);
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,25 +91,139 @@ public class MainActivity extends AppCompatActivity {
             return insets;
         });
 
-        loadData();
         if (!initSslSocketFactory()) {
             finish();
             return;
+        }
+        userPreferences.loadData(this);
+
+        //sta ako je promijenio, znaci ako baci error unknow host dozvoliti ponovni search ili uvijek imat ibutton serach tu
+        if(userPreferences.getDefaultDeviceIP() == null) {
+            availableDevicesAdapter = new AvailableDevicesAdapter(availableDevices, (_t) -> {
+                System.out.println(_t);
+                System.out.println(_t);
+            });
+
+            availableDevices.add("No devices found");
+
+            Log.d("jo", "op");
+
+            RecyclerView recyclerView = findViewById(R.id.availableDevicesRecyclerView);
+            recyclerView.setLayoutManager(new LinearLayoutManager(this));
+            recyclerView.setAdapter(availableDevicesAdapter);
+
+            // Lock height to 3 items once the view lays out
+            recyclerView.post(() -> {
+                RecyclerView.ViewHolder firstViewHolder = recyclerView.findViewHolderForAdapterPosition(0);
+                if (firstViewHolder != null) {
+                    int itemHeight = firstViewHolder.itemView.getHeight();
+                    int maxVisibleItems = 3;
+
+                    // If adapter has more than 3 items, set fixed height for 3
+                    if (availableDevicesAdapter.getItemCount() > maxVisibleItems) {
+                        ViewGroup.LayoutParams params = recyclerView.getLayoutParams();
+                        params.height = itemHeight * maxVisibleItems + itemHeight;
+                        recyclerView.setLayoutParams(params);
+                    }
+                }
+            });
+
+
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            lock = wm.createMulticastLock("gRPC_Sync_App_mDNS_Lock");
+
+            Thread mDNSThread = new Thread(() -> {
+                int ipAddress = wm.getConnectionInfo().getIpAddress();
+
+                try {
+                    // Reverse the array to fix endianness if necessary, or map cleanly:
+                    InetAddress wifiAddress = InetAddress.getByAddress(new byte[]{
+                            (byte) (ipAddress & 0xff),
+                            (byte) ((ipAddress >> 8) & 0xff),
+                            (byte) ((ipAddress >> 16) & 0xff),
+                            (byte) ((ipAddress >> 24) & 0xff)
+                    });
+
+                    jmdns = JmDNS.create(wifiAddress);
+                } catch (IOException e) {
+                    Log.d("MyService444", "Setting up mDNS failed. Reason: " + e.getMessage());
+                    throw new RuntimeException(e);
+                }
+
+                System.out.println("Scanning for gRPC services...");
+
+                lock.acquire();
+                // Add listener for our specific service type
+                jmdns.addServiceListener("_grpc._tcp.local.", new ServiceListener() {
+                    @Override
+                    public void serviceAdded(ServiceEvent event) {
+                        // When added, we must ask JmDNS to resolve its details (IP & Port)
+                        jmdns.requestServiceInfo(event.getType(), event.getName());
+                    }
+
+                    @Override
+                    public void serviceRemoved(ServiceEvent event) {
+                        System.out.println("Service disappeared: " + event.getName());
+                        if(availableDevices.contains(event.getName())) {
+
+                            availableDevices.remove(event.getName());
+
+                            if(availableDevices.isEmpty()) {
+                                availableDevices.add("No devices found");
+                            }
+
+                            runOnUiThread(() -> availableDevicesAdapter.notifyDataSetChanged());
+                        }
+                    }
+
+                    @Override
+                    public void serviceResolved(ServiceEvent event) {
+                        System.out.println("Service resolved! Details:");
+                        if(!availableDevices.contains(event.getName())) {
+                            if(availableDevices.size() == 1) availableDevices.remove(0);
+                            availableDevices.add(event.getName());
+                            runOnUiThread( () -> availableDevicesAdapter.notifyItemInserted(availableDevices.size()));
+                        }
+
+                        // Get IP and Port of the broadcasted service
+                        String ip = event.getInfo().getHostAddresses()[0];
+                        int port = event.getInfo().getPort();
+                        System.out.println("Name: " + event.getName());
+                        System.out.println("Address: " + ip + ":" + port);
+
+                        //if (lock.isHeld()) lock.release();
+
+                        // Create the gRPC channel dynamically!
+                        //checkNetworkAndRun(ip, port);
+                    }
+                });
+            });
+            mDNSThread.start();
+
         }
 
         if (isReadyForAutoBackgroundSync()) {
             appState.set(AppState.CONNECTING);
             updateButtonStates();
-            checkNetworkAndRun();
+            //checkNetworkAndRun();
         }
 
+        String pairingCode = userPreferences.getPairingCode();
         if (pairingCode != null) {
             binding.etPairingCode.setText(pairingCode);
         }
-        binding.switchNotification.setChecked(isWorkingInBackgroundAllowed);
+
+        binding.switchNotification.setChecked(userPreferences.isWorkingInBackgroundAllowed());
+
+        Uri targetFolderUri = userPreferences.getTargetFolderUri();
         if(targetFolderUri != null) {
-            binding.tvSelectedPath.setText(getHumanReadablePath(targetFolderUri));
-            binding.btnChooseFolder.setText("Change directory");
+            if(!hasPersistedPermission(targetFolderUri)) {
+                userPreferences.deleteTargetFolderUri(this);
+            }
+            else {
+                binding.tvSelectedPath.setText(Util.getHumanReadablePath(targetFolderUri));
+                binding.btnChooseFolder.setText("Change directory");
+            }
         }
 
         updateButtonStates();
@@ -118,7 +245,7 @@ public class MainActivity extends AppCompatActivity {
                     Uri treeUri = intent.getData();
 
                     if (treeUri == null) {
-                        Toast.makeText(this, "Internal app error. Contact an administrator.", LENGTH_SHORT).show();
+                        Toast.makeText(this, "Internal app error3. Contact an administrator.", LENGTH_SHORT).show();
                         return;
                     }
 
@@ -128,9 +255,8 @@ public class MainActivity extends AppCompatActivity {
                                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     );
 
-                    saveTargetFolderUri(treeUri);
-                    binding.tvSelectedPath.setText(getHumanReadablePath(treeUri));
-                    targetFolderUri = treeUri;
+                    userPreferences.saveTargetFolderUri(this, treeUri);
+                    binding.tvSelectedPath.setText(Util.getHumanReadablePath(treeUri));
 
                     updateButtonStates();
                 }
@@ -142,15 +268,15 @@ public class MainActivity extends AppCompatActivity {
                     if (isGranted) {
                         Log.d("MyService444", "Notification permission granted by user.");
                         binding.layoutAttentionWarning.setVisibility(View.GONE); // Hide warning since they granted it
-                        isWorkingInBackgroundAllowed = true;
+                        userPreferences.saveWorkingInBackgroundFlag(this, true);
                         binding.switchNotification.setChecked(true);
                     } else {
                         Log.w("MyService444", "Notification permission denied. Foreground service notification won't show.");
                         Toast.makeText(this, "You have not granted notification permission.", LENGTH_SHORT).show();
-                        isWorkingInBackgroundAllowed = false;
+                        userPreferences.saveWorkingInBackgroundFlag(this, false);
                         binding.switchNotification.setChecked(false);
                     }
-                    saveWorkingInBackgroundFlag();
+
                 }
         );
 
@@ -159,22 +285,18 @@ public class MainActivity extends AppCompatActivity {
             if (isChecked) {
                 // Check if we already have system notification approval
                 if (checkNotificationPermission()) {
-                    isWorkingInBackgroundAllowed = true;
+                    userPreferences.saveWorkingInBackgroundFlag(this, true);
                 }
                 else {
-
-                    isWorkingInBackgroundAllowed = false;
+                    userPreferences.saveWorkingInBackgroundFlag(this, false);
                     binding.layoutAttentionWarning.setVisibility(View.VISIBLE);
                 }
             } else {
                 // Hide warning completely if switch turned off
-
-
-                getSharedPreferences("app_prefs", MODE_PRIVATE).edit().remove("was_processing").apply();
+                userPreferences.deleteIsPausedInForeground(this);
                 binding.layoutAttentionWarning.setVisibility(View.GONE);
-                isWorkingInBackgroundAllowed = false;
+                userPreferences.saveWorkingInBackgroundFlag(this, false);
             }
-            saveWorkingInBackgroundFlag();
         });
 
         // 2. TRIGGER SYSTEM GRANT ACTION PROMPT
@@ -208,13 +330,13 @@ public class MainActivity extends AppCompatActivity {
 
         binding.btnStartSync.setOnClickListener(v -> {
             if (appState.compareAndSet(AppState.READY, AppState.CONNECTING)) {
-                pairingCode = binding.etPairingCode.getText().toString();
+                userPreferences.setPairingCode(binding.etPairingCode.getText().toString());
                 updateButtonStates();
-                if(!isWorkingInBackgroundAllowed) {
-                    saveWasProcessingFlag(true);
+                if(!userPreferences.isWorkingInBackgroundAllowed()) {
+                    userPreferences.saveIsPausedInForeground(this, true);
                 }
 
-                checkNetworkAndRun();
+                //checkNetworkAndRun("0,", 3);
             }
             else if (appState.compareAndSet(AppState.CONNECTED, AppState.DISCONNECTING)) {
                 updateButtonStates();
@@ -227,10 +349,10 @@ public class MainActivity extends AppCompatActivity {
                     sendStateBroadcast();
                 }).start();
 
-                Log.d("sink", "1");
+
                 //sendStateBroadcast();
-                if(!isWorkingInBackgroundAllowed) {
-                    saveWasProcessingFlag(false);
+                if(!userPreferences.isWorkingInBackgroundAllowed()) {
+                    userPreferences.saveIsPausedInForeground(this, false);
                 }
             }
             else if(appState.compareAndSet(AppState.RECONNECTING, AppState.NOT_READY)) {
@@ -247,25 +369,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean isReadyForAutoBackgroundSync() {
-        return pairingCode != null
-                && hasPersistedPermission(targetFolderUri)
-                && isWorkingInBackgroundAllowed;
+        return userPreferences.getPairingCode() != null
+                && hasPersistedPermission(userPreferences.getTargetFolderUri())
+                && userPreferences.isWorkingInBackgroundAllowed()
+                && (userPreferences.getDefaultDeviceIP() != null);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (isWorkingInBackgroundAllowed) return;
+        if (userPreferences.isWorkingInBackgroundAllowed()) return;
 
-        boolean userHadStartedProcess = getWasProcessingFlag();
+        boolean userHadStartedProcess = userPreferences.isPausedInForeground();
 
-        if (targetFolderUri != null && fileSyncManager == null) {
-            DocumentFile targetFolder = DocumentFile.fromTreeUri(this, targetFolderUri);
+        if (userPreferences.getTargetFolderUri() != null && fileSyncManager == null) {
+            DocumentFile targetFolder = DocumentFile.fromTreeUri(this, userPreferences.getTargetFolderUri());
             fileSyncManager = new FileSyncManager(getContentResolver(), targetFolder);
         }
 
         if (activitySyncController == null) {
-            initSyncController();
+            initSyncController("0,", 50051);
         }
 
         if (userHadStartedProcess) {
@@ -293,8 +416,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void initSyncController() {
-        activitySyncController = new GrpcSyncController(sslSocketFactory, pairingCode, new SyncCallback() {
+    private void initSyncController(String ip, int port) {
+        activitySyncController = new GrpcSyncController(ip, port, sslSocketFactory, userPreferences.getPairingCode(), new SyncCallback() {
             @Override
             public void onConnectionReady() {
                 appState.set(AppState.CONNECTED);
@@ -353,11 +476,7 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-    private void loadData() {
-        pairingCode = getSavedPairingCode();
-        targetFolderUri = getSavedFolderUri();
-        isWorkingInBackgroundAllowed = getWorkInBackgroundFlag();
-    }
+
     private boolean hasPersistedPermission(Uri uri) {
         if (uri == null) return false;
 
@@ -394,7 +513,7 @@ public class MainActivity extends AppCompatActivity {
         boolean isTokenValid = token.length() == 4;
 
         // CONDITION: Sync can ONLY start if a directory is picked AND token is typed
-        if (targetFolderUri != null && isTokenValid) {
+        if (userPreferences.getTargetFolderUri() != null && isTokenValid) {
             appState.compareAndSet(AppState.NOT_READY, AppState.READY);
         } else {
             appState.compareAndSet(AppState.READY, AppState.NOT_READY);
@@ -421,130 +540,14 @@ public class MainActivity extends AppCompatActivity {
         binding.btnStartSync.setText(appState.toString());
     }
 
-    private final AtomicReference<AppState> appState = new AtomicReference<>(AppState.NOT_READY);
-
-    public enum AppState {
-        READY("START"),
-        NOT_READY("START"),
-        CONNECTED("STOP"),
-        CONNECTING("CONNECTING"),
-        DISCONNECTING("DISCONNECTING"),
-        RECONNECTING("RECONNECTING (STOP NOW)");
-
-
-        private final String label;
-
-        // Private constructor (implicitly private in enums)
-        AppState(String label) {
-            this.label = label;
-        }
-
-        // Standard getter for the custom string
-        public String getLabel() {
-            return label;
-        }
-
-        // Overriding toString allows direct use in print statements
-        @NonNull
-        @Override
-        public String toString() {
-            return label;
-        }
-    }
-
-    private Uri getSavedFolderUri() {
-        SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        String uriString = prefs.getString("target_folder_uri", null);
-        if (uriString == null) return null;
-        return Uri.parse(uriString);
-    }
-    private void saveTargetFolderUri(Uri targetFolderUri) {
-        getSharedPreferences("app_prefs", MODE_PRIVATE)
-                .edit()
-                .putString("target_folder_uri", targetFolderUri.toString())
-                .apply();
-    }
-    public void saveWorkingInBackgroundFlag() {
-        getSharedPreferences("app_prefs", MODE_PRIVATE)
-                .edit()
-                .putBoolean("work_in_background", isWorkingInBackgroundAllowed)
-                .apply();
-    }
-    public void savePairingCode(String pairingCode) {
-        getSharedPreferences("app_prefs", MODE_PRIVATE)
-                .edit()
-                .putString("pairing_code", pairingCode)
-                .apply();
-    }
-    public void saveWasProcessingFlag(boolean isProcessing) {
-        getSharedPreferences("app_prefs", MODE_PRIVATE)
-                .edit()
-                .putBoolean("was_processing", isProcessing)
-                .apply();
-    }
-    private String getSavedPairingCode() {
-        SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        return prefs.getString("pairing_code", null);
-    }
-    private boolean getWorkInBackgroundFlag() {
-        SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        return prefs.getBoolean("work_in_background", false);
-    }
-
-    private boolean getWasProcessingFlag() {
-        SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        return prefs.getBoolean("was_processing", false);
-    }
-
-    public static String getHumanReadablePath(Uri uri) {
-        if (uri == null) return "";
-
-        String path = uri.getPath();
-        if (path == null) return uri.toString();
-
-        // 1. Decode URL characters (e.g., %20 becomes space, %2F becomes /)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            path = URLDecoder.decode(path, StandardCharsets.UTF_8);
-        }
-
-        // 2. Strip away SAF prefixes
-        if (path.contains("/tree/")) {
-            path = path.substring(path.indexOf("/tree/") + 6);
-        } else if (path.contains("/document/")) {
-            path = path.substring(path.indexOf("/document/") + 10);
-        }
-
-        // 3. Handle common storage types
-        if (path.startsWith("primary:")) {
-            path = path.replace("primary:", "Internal Storage > ");
-        } else if (path.startsWith("raw:")) {
-            path = path.replace("raw:", "");
-        } else if (path.contains(":")) {
-            // Handles SD Cards or specific volume names (e.g., "1A2B-3C4D:Folder")
-            path = path.replace(":", " > ");
-        }
-
-        // 4. Clean up remaining slashes for a polished UI appearance
-        path = path.replaceAll("/", " > ");
-
-        // Remove trailing or leading " > " if they exist
-        if (path.startsWith(" > ")) path = path.substring(3);
-        if (path.endsWith(" > ")) path = path.substring(0, path.length() - 3);
-
-        return path;
-    }
-
     @Override
     protected void onStart() {
         super.onStart();
-
-
     }
 
     @Override
     protected void onStop(){
         super.onStop();
-
     }
 
     @Override
@@ -552,6 +555,8 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         unregisterReceiver(serviceStateReceiver);
         activitySyncController.stop();
+        Log.d("FileSyncManagerrr", "Closed ");
+        if (lock.isHeld()) lock.release();
     }
 
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
@@ -590,7 +595,7 @@ public class MainActivity extends AppCompatActivity {
         sendBroadcast(intent);
     }
 
-    private void checkNetworkAndRun() {
+    private void checkNetworkAndRun(String ip, int port) {
         ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
 
         if (cm == null) {
@@ -615,17 +620,17 @@ public class MainActivity extends AppCompatActivity {
 
                 // 4. Now it is safe to fire your gRPC thread
                 try {
-                    if (activitySyncController == null) initSyncController();
+                    if (activitySyncController == null) initSyncController(ip, port);
                     activitySyncController.initAuthBlockingStub();
                     FolderSyncGrpc.FolderSyncBlockingStub authStub = activitySyncController.getAuthBlockingStub();
 
                     FolderSyncProto.AuthResponse response = authStub.verifyToken(
-                            FolderSyncProto.AuthRequest.newBuilder().setToken(pairingCode).build()
+                            FolderSyncProto.AuthRequest.newBuilder().setToken(userPreferences.getPairingCode()).build()
                     );
 
                     if (response.getSuccess()) {
                         runOnUiThread(() -> {
-                            savePairingCode(pairingCode);
+                            userPreferences.savePairingCode(getApplicationContext(), userPreferences.getPairingCode());
                             startActualSyncService();
                         });
                     } else {
@@ -639,14 +644,12 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         if (e.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
                             binding.etPairingCode.setError("Invalid pairing code!");
-                            appState.set(AppState.NOT_READY);
-                            updateButtonStates();
                         } else {
-                            Log.d("sinc", e.toString() + "_" + e.getTrailers());
+                            Log.d("sinc", e + "_" + e.getTrailers());
                             Toast.makeText(getApplicationContext(), "PC unreachable", LENGTH_SHORT).show();
-                            appState.set(AppState.NOT_READY);
-                            updateButtonStates();
                         }
+                        appState.set(AppState.NOT_READY);
+                        updateButtonStates();
                     });
                 }
             }
@@ -667,20 +670,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startActualSyncService() {
-        if(isWorkingInBackgroundAllowed) {
+        if(userPreferences.isWorkingInBackgroundAllowed()) {
             if (!checkNotificationPermission()) {
                 Toast.makeText(this, "Grant notification permission before starting app in background", LENGTH_SHORT).show();
                 appState.set(AppState.NOT_READY);
                 updateButtonStates();
             }
             Intent intent = new Intent(this, SyncService.class);
-            intent.putExtra("target_folder_uri", targetFolderUri.toString());
-            intent.putExtra("pairing_code", pairingCode);
+            intent.putExtra("target_folder_uri", userPreferences.getTargetFolderUri().toString());
+            intent.putExtra("pairing_code", userPreferences.getPairingCode());
 
             ContextCompat.startForegroundService(this, intent);
         }
         else {
-            DocumentFile targetFolder = DocumentFile.fromTreeUri(this, targetFolderUri);
+            DocumentFile targetFolder = DocumentFile.fromTreeUri(this, userPreferences.getTargetFolderUri());
             fileSyncManager = new FileSyncManager(getContentResolver(), targetFolder);
 
             activitySyncController.start();

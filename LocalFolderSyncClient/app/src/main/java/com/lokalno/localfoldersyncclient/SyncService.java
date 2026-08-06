@@ -30,6 +30,8 @@ import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 import com.lokalno.foldersync.FolderSyncProto.FileMessage;
+import com.lokalno.localfoldersyncclient.grpc.GrpcSyncController;
+import com.lokalno.localfoldersyncclient.grpc.SyncCallback;
 import com.lokalno.localfoldersyncclient.util.Util;
 
 import javax.net.ssl.SSLSocketFactory;
@@ -228,7 +230,10 @@ public class SyncService extends Service {
             // Safe check in case it was already unregistered
             e.printStackTrace();
         }
-        syncController.stop();
+        if(syncController != null) {
+            syncController.stop();
+        }
+
     }
 
     @Override
@@ -261,19 +266,20 @@ public class SyncService extends Service {
 
             if(uriString == null || pairingCode == null) {
                 Log.d("sinc", "op1");
-                Toast.makeText(this, "Internal App Error. Contact an administrator.", LENGTH_SHORT).show();
+                Toast.makeText(this, "Internal App Error2. Contact an administrator.", LENGTH_SHORT).show();
                 stopSelf(startId);
                 return START_NOT_STICKY;
             }
             // Re-create the Uri from the string
             Uri folderUri = Uri.parse(uriString);
 
+            Log.d("sinc", folderUri + "");
             // Now, re-create the DocumentFile object using the Uri
             targetFolder = DocumentFile.fromTreeUri(this, folderUri);
 
             if (targetFolder == null || !targetFolder.exists()) {
-                Toast.makeText(this, "Internal App Error. Contact an administrator.", LENGTH_SHORT).show();
-                Log.d("sinc", "op2");
+                Toast.makeText(this, "Internal App Error1. Contact an administrator.", LENGTH_SHORT).show();
+                Log.d("sinc", "op2" + targetFolder.exists() + targetFolder);
                 stopSelf(startId);
                 return START_NOT_STICKY;
             }
@@ -281,7 +287,7 @@ public class SyncService extends Service {
 
             fileSyncManager = new FileSyncManager(getContentResolver(), targetFolder);
 
-            syncController = new GrpcSyncController(sslSocketFactory, pairingCode, new SyncCallback() {
+            syncController = new GrpcSyncController("90", 0, sslSocketFactory, pairingCode, new SyncCallback() {
                 @Override
                 public void onConnectionReady() {
                     // Update Foreground Notification here

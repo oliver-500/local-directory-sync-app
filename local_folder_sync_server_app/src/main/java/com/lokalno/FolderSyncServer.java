@@ -96,7 +96,7 @@ public class FolderSyncServer {
                         FileProcessor.ChunkElement element;
                         try {
                             //System.out.println("Waiting for chunk");
-                            element = chunkQueue.take(); // Blocks until a file arrives
+                            element = chunkQueue.take(); // Blocks until a chunk arrives
                             //System.out.println("chunk taken");
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();

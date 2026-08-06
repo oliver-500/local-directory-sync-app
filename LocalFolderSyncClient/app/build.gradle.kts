@@ -50,6 +50,8 @@ dependencies {
     implementation(libs.grpc.stub)
     implementation(libs.protobuf)
     implementation("org.bouncycastle:bcprov-jdk18on:1.84")
+    // Source: https://mvnrepository.com/artifact/org.jmdns/jmdns
+    implementation("org.jmdns:jmdns:3.6.3")
 
 }
 

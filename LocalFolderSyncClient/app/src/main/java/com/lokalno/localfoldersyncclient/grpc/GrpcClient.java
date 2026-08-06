@@ -1,4 +1,4 @@
-package com.lokalno.localfoldersyncclient;
+package com.lokalno.localfoldersyncclient.grpc;
 
 import android.util.Log;
 
@@ -21,15 +21,21 @@ public class GrpcClient {
     private SSLSocketFactory socketFactory;
     private int retryDelaySeconds = 2;
     private CallCredentials callCredentials;
+    private String ip;
+    private int port;
 
     public GrpcClient() {
     }
 
     public GrpcClient(
             SSLSocketFactory socketFactory,
-            String pairingCode
+            String pairingCode,
+            String ip,
+            int port
     ) {
         this.socketFactory = socketFactory;
+        this.ip = ip;
+        this.port = port;
 
         createChannel();
         createCallCredentials(pairingCode);
@@ -37,7 +43,7 @@ public class GrpcClient {
 
     private void createChannel() {
         channel = OkHttpChannelBuilder
-                .forAddress("192.168.1.99", 50051)
+                .forAddress(ip, port)
                 .sslSocketFactory(socketFactory)
                 .maxInboundMessageSize(64 * 1024 * 1024)
                 //.keepAliveTime(30, TimeUnit.SECONDS)

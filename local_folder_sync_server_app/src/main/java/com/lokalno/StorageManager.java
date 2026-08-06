@@ -8,7 +8,7 @@ import java.security.SecureRandom;
 import java.util.logging.Logger;
 
 public class StorageManager {
-    private static final Logger logger = Logger.getLogger(StorageManager.class.getName());
+    //private static final Logger logger = Logger.getLogger(StorageManager.class.getName());
 
     // Define an isolated directory name for your sync tool
     private static final String APP_FOLDER_NAME = "LocalFolderSyncServer";
@@ -22,7 +22,7 @@ public class StorageManager {
         Path tokenFilePath = getSafeStoragePath();
 
         if (tokenFilePath == null) {
-            logger.warning("⚠️ Could not resolve a safe storage path. Falling back to temporary in-memory token.");
+            System.out.println("⚠️ Could not resolve a safe storage path. Falling back to temporary in-memory token.");
             return generateNumericToken();
         }
 
@@ -32,10 +32,10 @@ public class StorageManager {
                 String storedToken = new String(Files.readAllBytes(tokenFilePath)).trim();
                 // Basic validation to ensure data wasn't corrupted
                 if (storedToken.length() == 4 && storedToken.matches("\\d+")) {
-                    logger.info("💾 Retrieved existing pairing code from secure storage.");
+                    System.out.println("💾 Retrieved existing pairing code from secure storage.");
                     return storedToken;
                 }
-                logger.warning("⚠️ Stored token file was corrupted or modified. Regenerating...");
+                System.out.println("⚠️ Stored token file was corrupted or modified. Regenerating...");
             }
 
             // 2. If it does not exist, create the nested folders safely
@@ -49,11 +49,11 @@ public class StorageManager {
 
             // 4. Write it to the low-privilege file system path
             Files.write(tokenFilePath, freshToken.getBytes());
-            logger.info("✨ Generated and saved a fresh pairing code to local storage.");
+            System.out.println("✨ Generated and saved a fresh pairing code to local storage.");
             return freshToken;
 
         } catch (IOException e) {
-            logger.severe("❌ Failed to access or write to token storage: " + e.getMessage());
+            System.out.println("❌ Failed to access or write to token storage: " + e.getMessage());
             // Safe fallback so the server doesn't crash completely
             return generateNumericToken();
         }

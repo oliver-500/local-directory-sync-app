@@ -1,4 +1,4 @@
-package com.lokalno.localfoldersyncclient;
+package com.lokalno.localfoldersyncclient.grpc;
 
 import com.lokalno.foldersync.FolderSyncProto;
 

@@ -20,20 +20,52 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Enter PC Pairing Code"
-                android:textSize="16sp"
-                android:textStyle="bold" />
-
-            <EditText
-                android:id="@+id/et_pairing_code"
+            <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="4-Digit Code"
-                android:inputType="number"
-                android:maxLength="4" />
+                android:padding="10sp"
+                android:background="@drawable/recyclerview_border"
+                android:id="@+id/devices"
+                android:orientation="vertical"
+
+                >
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Select your device:"
+
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    ></TextView>
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:padding="5sp"
+
+                    android:id="@+id/availableDevicesRecyclerView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:scrollbars="vertical"
+                    ></androidx.recyclerview.widget.RecyclerView>
+                <Space
+                    android:layout_width="match_parent"
+                    android:layout_height="12dp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Enter PC Pairing Code:"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/et_pairing_code"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="4-Digit Code"
+                    android:inputType="number"
+                    android:maxLength="4" />
+            </LinearLayout>
+
+
 
             <Space android:layout_width="match_parent" android:layout_height="16dp"/>
 

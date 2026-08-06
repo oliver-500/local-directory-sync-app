@@ -1,4 +1,4 @@
-package com.lokalno.localfoldersyncclient;
+package com.lokalno.localfoldersyncclient.grpc;
 
 import android.util.Log;
 
@@ -21,12 +21,12 @@ public class GrpcSyncController {
     public boolean isRunning = false;
     public boolean isStopped = false;
 
-    public GrpcSyncController(SSLSocketFactory sslSocketFactory, String pairingCode, SyncCallback callback) {
+    public GrpcSyncController(String ip, int port, SSLSocketFactory sslSocketFactory, String pairingCode, SyncCallback callback) {
         this.sslSocketFactory = sslSocketFactory;
         this.pairingCode = pairingCode;
         this.callback = callback;
         Log.d("opaas", "creating new client");
-        initClient();
+        initClient(ip, port);
     }
 
     public FolderSyncGrpc.FolderSyncBlockingStub getAuthBlockingStub() {
@@ -51,8 +51,8 @@ public class GrpcSyncController {
         }
     }
 
-    public void initClient() {
-        grpcClient = new GrpcClient(sslSocketFactory, pairingCode);
+    public void initClient(String ip, int port) {
+        grpcClient = new GrpcClient(sslSocketFactory, pairingCode, ip, port);
     }
 
     private Thread createMainThread() {
